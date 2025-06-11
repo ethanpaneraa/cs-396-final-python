@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-Progressive Attack Generator with Original Print Format
-Combines pixel perturbation progression with targeted attacks
-Uses exact same print output as your original scripts
-"""
-
 import os
 import json
 import cv2

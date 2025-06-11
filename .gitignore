@@ -6,7 +6,7 @@ high_impact_dataset/
 website_dataset/
 .DS_Store
 comprehensive_results/
-
+progressive_attacks/
 # Ignore Python cache files
 __pycache__/
 # Ignore Jupyter Notebook checkpoints

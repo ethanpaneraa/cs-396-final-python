@@ -1,0 +1,16 @@
+attacks/
+output/
+simulation_results/
+targeted_attacks/
+high_impact_dataset/
+website_dataset/
+.DS_Store
+comprehensive_results/
+
+# Ignore Python cache files
+__pycache__/
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+# Ignore virtual environment directories
+venv/
+venv/

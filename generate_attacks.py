@@ -11,7 +11,6 @@ import cv2
 import numpy as np
 from typing import Tuple, Dict, Any
 
-# Configuration
 SOURCES = {
     "stop": "source_images/stop.png",
     "ped": "source_images/ped.jpg",
@@ -21,7 +20,6 @@ SOURCES = {
 OUTPUT_DIR = "progressive_attacks"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# Global metadata dictionary (like original script)
 metadata = {}
 results = {}
 
@@ -206,7 +204,6 @@ def main():
 
     np.random.seed(42)
 
-    # Check if source images exist before starting
     print("Checking source images...")
     for src_name, src_path in SOURCES.items():
         if not os.path.exists(src_path):
@@ -218,27 +215,20 @@ def main():
 
     print("\nStarting progressive attack generation...")
 
-    # Define progressive attack sequence
-    attack_sequence = [
-        # Level 1: Gentle pixel perturbation
+    attack_sequence = [`
         {"name": "gentle_pixels", "detectors": ["sobel", "canny"], "type": "pixel",
          "params": {"patch_size": 20, "flip_pct": 0.01, "delta": 25}},
 
-        # Level 2: Moderate pixel perturbation
         {"name": "moderate_pixels", "detectors": ["sobel", "canny"], "type": "pixel",
          "params": {"patch_size": 40, "flip_pct": 0.03, "delta": 75}},
 
-        # Level 3: Aggressive pixel perturbation
         {"name": "aggressive_pixels", "detectors": ["sobel", "canny"], "type": "pixel",
          "params": {"patch_size": 60, "flip_pct": 0.05, "delta": 255}},
 
-        # Level 4: Smart edge attacks
         {"name": "smart_edge", "detectors": ["sobel", "canny"], "type": "edge_blur"},
 
-        # Level 5: Gradient attacks
         {"name": "gradient", "detectors": ["sobel", "canny"], "type": "gradient_reverse"},
 
-        # Level 6: Contour attacks
         {"name": "contour", "detectors": ["sobel", "canny", "laplacian", "roberts"], "type": "contour_disrupt"},
     ]
 

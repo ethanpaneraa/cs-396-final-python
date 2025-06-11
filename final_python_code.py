@@ -23,7 +23,7 @@ class SimulationConfig:
     add_noise: bool = False
     noise_level: float = 0.1
 
-class ConfigurableEdgeSimulator:
+class EffectiveConfigurableSimulator:
     def __init__(self):
         self.config = SimulationConfig()
 
@@ -44,10 +44,10 @@ class ConfigurableEdgeSimulator:
         }
 
         self.INTENSITIES = {
-            "subtle": {"strength": 0.1, "desc": "Barely noticeable"},
-            "moderate": {"strength": 0.3, "desc": "Visible but not obvious"},
-            "aggressive": {"strength": 0.5, "desc": "Clearly visible changes"},
-            "extreme": {"strength": 0.8, "desc": "Heavily distorted"}
+            "subtle": {"strength": 0.2, "desc": "Barely noticeable"},
+            "moderate": {"strength": 0.4, "desc": "Visible but not obvious"},
+            "aggressive": {"strength": 0.6, "desc": "Clearly visible changes"},
+            "extreme": {"strength": 0.9, "desc": "Heavily distorted"}
         }
 
         self.LIGHTING = {
@@ -134,24 +134,113 @@ class ConfigurableEdgeSimulator:
         return cv2.normalize(grad, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
     def apply_attack(self, gray: np.ndarray) -> np.ndarray:
-        intensity = self.INTENSITIES[self.config.attack_intensity]["strength"]
-
         if self.config.attack_type == "pixel_perturbation":
-            return self._pixel_perturbation_attack(gray, intensity)
+            return self._pixel_perturbation_attack(gray)
         elif self.config.attack_type == "edge_blur":
-            return self._edge_blur_attack(gray, intensity)
+            return self._aggressive_edge_blur_attack(gray)
         elif self.config.attack_type == "gradient_reverse":
-            return self._gradient_reverse_attack(gray, intensity)
+            return self._aggressive_gradient_reverse_attack(gray)
         elif self.config.attack_type == "contour_disrupt":
-            return self._contour_disruption_attack(gray, intensity)
+            return self._aggressive_contour_disruption_attack(gray)
         elif self.config.attack_type == "geometric":
-            return self._geometric_attack(gray, intensity)
+            return self._geometric_attack(gray)
         elif self.config.attack_type == "occlusion":
-            return self._occlusion_attack(gray, intensity)
+            return self._occlusion_attack(gray)
         else:
             return gray
 
-    def _pixel_perturbation_attack(self, gray: np.ndarray, intensity: float) -> np.ndarray:
+    def _aggressive_edge_blur_attack(self, gray: np.ndarray) -> np.ndarray:
+        edges = self._sobel_edges(gray)
+
+        attack_strength = 0.3
+        threshold = np.percentile(edges, (1 - attack_strength) * 100)
+        strong_edge_mask = edges > threshold
+
+        attacked = gray.copy().astype(np.float32)
+
+        blurred = cv2.GaussianBlur(attacked, (31, 31), 8.0)
+        attacked[strong_edge_mask] = blurred[strong_edge_mask]
+
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        dilated_mask = cv2.dilate(strong_edge_mask.astype(np.uint8), kernel, iterations=2)
+
+        super_blurred = cv2.GaussianBlur(attacked, (21, 21), 5.0)
+        attacked[dilated_mask > 0] = super_blurred[dilated_mask > 0]
+
+        return attacked.astype(np.uint8)
+
+    def _aggressive_gradient_reverse_attack(self, gray: np.ndarray) -> np.ndarray:
+        sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        grad_mag = np.sqrt(sobel_x**2 + sobel_y**2)
+
+        attack_strength = 0.1
+        threshold = np.percentile(grad_mag, (1 - attack_strength) * 100)
+        strong_edges = grad_mag > threshold
+
+        attacked = gray.copy().astype(np.float32)
+
+        for y, x in np.argwhere(strong_edges):
+            if 1 <= y < gray.shape[0]-1 and 1 <= x < gray.shape[1]-1:
+                gx, gy = sobel_x[y, x], sobel_y[y, x]
+
+                magnitude = min(100, grad_mag[y, x] * 0.8)
+
+                if abs(gx) > abs(gy):
+                    attacked[y, x] = np.clip(attacked[y, x] - np.sign(gx) * magnitude, 0, 255)
+                else:
+                    attacked[y, x] = np.clip(attacked[y, x] - np.sign(gy) * magnitude, 0, 255)
+
+                for dy in [-1, 0, 1]:
+                    for dx in [-1, 0, 1]:
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < gray.shape[0] and 0 <= nx < gray.shape[1]:
+                            attacked[ny, nx] = np.clip(attacked[ny, nx] - np.sign(gx + gy) * magnitude * 0.3, 0, 255)
+
+        return attacked.astype(np.uint8)
+
+    def _aggressive_contour_disruption_attack(self, gray: np.ndarray) -> np.ndarray:
+        edges = self._sobel_edges(gray)
+        _, binary = cv2.threshold(edges, 30, 255, cv2.THRESH_BINARY)
+
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return gray
+
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:3]
+
+        attacked = gray.copy()
+
+        for contour in contours:
+            if cv2.contourArea(contour) < 100:
+                continue
+            mask = np.zeros_like(gray)
+            cv2.drawContours(mask, [contour], -1, 255, thickness=20)
+
+            blurred = cv2.GaussianBlur(attacked, (41, 41), 10.0)
+            attacked[mask > 0] = blurred[mask > 0]
+
+            contour_points = contour.reshape(-1, 2)
+            num_holes = min(5, len(contour_points) // 10)
+
+            for _ in range(num_holes):
+                if len(contour_points) > 0:
+                    idx = np.random.randint(0, len(contour_points))
+                    cx, cy = contour_points[idx]
+
+                    hole_size = 15
+                    y1 = max(0, cy - hole_size)
+                    y2 = min(gray.shape[0], cy + hole_size)
+                    x1 = max(0, cx - hole_size)
+                    x2 = min(gray.shape[1], cx + hole_size)
+
+                    background_color = np.mean(gray)
+                    attacked[y1:y2, x1:x2] = background_color
+
+        return attacked
+
+    def _pixel_perturbation_attack(self, gray: np.ndarray) -> np.ndarray:
+        intensity = self.INTENSITIES[self.config.attack_intensity]["strength"]
         attacked = gray.astype(np.float32)
         num_pixels = int(gray.size * intensity * 0.1)
 
@@ -163,69 +252,8 @@ class ConfigurableEdgeSimulator:
 
         return attacked.astype(np.uint8)
 
-    def _edge_blur_attack(self, gray: np.ndarray, intensity: float) -> np.ndarray:
-        edges = self.compute_edges(gray)
-        threshold = np.percentile(edges, (1 - intensity) * 100)
-        edge_mask = edges > threshold
-
-        attacked = gray.copy().astype(np.float32)
-        blur_size = int(intensity * 20) * 2 + 1
-        blurred = cv2.GaussianBlur(attacked, (blur_size, blur_size), intensity * 5)
-        attacked[edge_mask] = blurred[edge_mask]
-
-        return attacked.astype(np.uint8)
-
-    def _gradient_reverse_attack(self, gray: np.ndarray, intensity: float) -> np.ndarray:
-        sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        grad_mag = np.sqrt(sobel_x**2 + sobel_y**2)
-
-        threshold = np.percentile(grad_mag, (1 - intensity) * 100)
-        strong_edges = grad_mag > threshold
-
-        attacked = gray.copy().astype(np.float32)
-
-        for y, x in np.argwhere(strong_edges):
-            if 1 <= y < gray.shape[0]-1 and 1 <= x < gray.shape[1]-1:
-                gx, gy = sobel_x[y, x], sobel_y[y, x]
-                magnitude = min(100, grad_mag[y, x] * intensity)
-
-                if abs(gx) > abs(gy):
-                    attacked[y, x] = np.clip(attacked[y, x] - np.sign(gx) * magnitude, 0, 255)
-                else:
-                    attacked[y, x] = np.clip(attacked[y, x] - np.sign(gy) * magnitude, 0, 255)
-
-        return attacked.astype(np.uint8)
-
-    def _contour_disruption_attack(self, gray: np.ndarray, intensity: float) -> np.ndarray:
-        edges = self.compute_edges(gray)
-        _, binary = cv2.threshold(edges, 30, 255, cv2.THRESH_BINARY)
-
-        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return gray
-
-        attacked = gray.copy()
-        num_contours = min(3, len(contours))
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:num_contours]
-
-        for contour in contours:
-            if cv2.contourArea(contour) < 100:
-                continue
-
-            mask = np.zeros_like(gray)
-            thickness = int(intensity * 30) + 5
-            cv2.drawContours(mask, [contour], -1, 255, thickness=thickness)
-
-            blur_size = int(intensity * 40) + 1
-            if blur_size % 2 == 0:
-                blur_size += 1
-            blurred = cv2.GaussianBlur(attacked, (blur_size, blur_size), intensity * 8)
-            attacked[mask > 0] = blurred[mask > 0]
-
-        return attacked
-
-    def _geometric_attack(self, gray: np.ndarray, intensity: float) -> np.ndarray:
+    def _geometric_attack(self, gray: np.ndarray) -> np.ndarray:
+        intensity = self.INTENSITIES[self.config.attack_intensity]["strength"]
         h, w = gray.shape
         center = (w // 2, h // 2)
 
@@ -237,7 +265,8 @@ class ConfigurableEdgeSimulator:
 
         return attacked
 
-    def _occlusion_attack(self, gray: np.ndarray, intensity: float) -> np.ndarray:
+    def _occlusion_attack(self, gray: np.ndarray) -> np.ndarray:
+        intensity = self.INTENSITIES[self.config.attack_intensity]["strength"]
         attacked = gray.copy()
         h, w = gray.shape
 
@@ -256,13 +285,10 @@ class ConfigurableEdgeSimulator:
 
         return attacked
 
-    def compute_metrics(self, clean_edges: np.ndarray, attacked_edges: np.ndarray) -> Dict[str, float]:
+    def compute_attack_effectiveness(self, clean_edges: np.ndarray, attacked_edges: np.ndarray) -> dict:
         clean_density = np.mean(clean_edges > 20)
         attacked_density = np.mean(attacked_edges > 20)
-        density_change = (attacked_density - clean_density) / clean_density if clean_density > 0 else 0
-
-        from skimage.metrics import structural_similarity as ssim
-        similarity = ssim(clean_edges, attacked_edges)
+        density_reduction = (clean_density - attacked_density) / clean_density if clean_density > 0 else 0
 
         _, clean_binary = cv2.threshold(clean_edges, 20, 255, cv2.THRESH_BINARY)
         _, attacked_binary = cv2.threshold(attacked_edges, 20, 255, cv2.THRESH_BINARY)
@@ -273,27 +299,23 @@ class ConfigurableEdgeSimulator:
         clean_max_area = max([cv2.contourArea(c) for c in clean_contours]) if clean_contours else 0
         attacked_max_area = max([cv2.contourArea(c) for c in attacked_contours]) if attacked_contours else 0
 
-        contour_change = (attacked_max_area - clean_max_area) / clean_max_area if clean_max_area > 0 else 0
+        contour_reduction = (clean_max_area - attacked_max_area) / clean_max_area if clean_max_area > 0 else 0
 
         return {
-            "edge_density_change": float(density_change),
-            "contour_area_change": float(contour_change),
-            "structural_similarity": float(similarity),
-            "attack_effectiveness": float(abs(density_change) + abs(contour_change) + (1 - similarity))
+            "edge_density_reduction": float(density_reduction),
+            "contour_area_reduction": float(contour_reduction),
+            "attack_success": bool(density_reduction > 0.15 or contour_reduction > 0.2 or abs(density_reduction) > 0.3)
         }
 
-    def run_simulation(self, image_path: str, output_dir: str = "simulation_results") -> Dict[str, Any]:
+    def run_simulation(self, image_path: str, output_dir: str = "effective_simulation_results") -> Dict[str, Any]:
+        """Run simulation with aggressive attacks"""
         os.makedirs(output_dir, exist_ok=True)
 
         gray_clean = self.load_and_preprocess(image_path)
-
         edges_clean = self.compute_edges(gray_clean)
-
         gray_attacked = self.apply_attack(gray_clean)
-
         edges_attacked = self.compute_edges(gray_attacked)
-
-        metrics = self.compute_metrics(edges_clean, edges_attacked)
+        effectiveness = self.compute_attack_effectiveness(edges_clean, edges_attacked)
 
         base_name = f"sim_{self.config.detector}_{self.config.attack_type}_{self.config.attack_intensity}"
 
@@ -310,7 +332,7 @@ class ConfigurableEdgeSimulator:
                 "lighting": self.config.lighting,
                 "resolution": self.config.resolution
             },
-            "metrics": metrics,
+            "metrics": effectiveness,
             "files": {
                 "original": f"{base_name}_original.png",
                 "attacked": f"{base_name}_attacked.png",
@@ -325,7 +347,13 @@ class ConfigurableEdgeSimulator:
         return results
 
 def main():
-    simulator = ConfigurableEdgeSimulator()
+    simulator = EffectiveConfigurableSimulator()
+
+    test_images = [
+        "source_images/stop.png",
+        "source_images/ped.jpg",
+        "source_images/street.jpg"
+    ]
 
     test_configs = [
         {"detector": "sobel", "attack_type": "contour_disrupt", "attack_intensity": "moderate"},
@@ -334,17 +362,35 @@ def main():
         {"detector": "roberts", "attack_type": "occlusion", "attack_intensity": "extreme", "add_noise": True}
     ]
 
-    image_path = "source_images/stop.png"
+    all_results = {}
+    total_successful = 0
+    total_attacks = 0
 
-    for i, config in enumerate(test_configs):
-        print(f"\nRunning simulation {i+1}/{len(test_configs)}")
-        print(f"Config: {config}")
+    for image_path in test_images:
+        if not os.path.exists(image_path):
+            print(f"Skipping {image_path} - file not found")
+            continue
 
-        simulator.configure(**config)
-        results = simulator.run_simulation(image_path)
+        image_name = os.path.basename(image_path).split('.')[0]
+        print(f"Processing: {image_name}")
 
-        print(f"Attack effectiveness: {results['metrics']['attack_effectiveness']:.3f}")
-        print(f"Edge density change: {results['metrics']['edge_density_change']:.1%}")
+        for i, config in enumerate(test_configs):
+            simulator.configure(**config)
+            results = simulator.run_simulation(image_path)
+
+            attack_key = f"{image_name}_{config['detector']}_{config['attack_type']}"
+            all_results[attack_key] = results
+
+            effectiveness = results['metrics']
+            success_str = "SUCCESS" if effectiveness["attack_success"] else "FAILED"
+            print(f"  {config['attack_type']}: {success_str} (edge reduction: {effectiveness['edge_density_reduction']:.1%})")
+
+            if effectiveness["attack_success"]:
+                total_successful += 1
+            total_attacks += 1
+
+    print(f"\nResults saved to effective_simulation_results/")
+    print(f"Successful attacks: {total_successful}/{total_attacks}")
 
 if __name__ == "__main__":
     main()

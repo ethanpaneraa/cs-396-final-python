@@ -7,6 +7,7 @@ website_dataset/
 .DS_Store
 comprehensive_results/
 progressive_attacks/
+effective_simulation_results/
 # Ignore Python cache files
 __pycache__/
 # Ignore Jupyter Notebook checkpoints

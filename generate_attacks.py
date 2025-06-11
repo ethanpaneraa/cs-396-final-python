@@ -208,7 +208,7 @@ def main():
 
     print("\nStarting progressive attack generation...")
 
-    attack_sequence = [`
+    attack_sequence = [
         {"name": "gentle_pixels", "detectors": ["sobel", "canny"], "type": "pixel",
          "params": {"patch_size": 20, "flip_pct": 0.01, "delta": 25}},
 

@@ -125,7 +125,3 @@ progressive_attacks/
 
 Pull requests and issue reports are welcome!
 All code is released under the MIT License—see [`LICENSE`](LICENSE) for details.
-
-```
-
-```

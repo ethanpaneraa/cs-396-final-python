@@ -2,196 +2,290 @@ import os
 import json
 import cv2
 import numpy as np
-from typing import Tuple
+from typing import Dict, Any
 
-SOURCES = {
-    "stop": "source_images/stop.png",
-    "ped": "source_images/ped.jpg",
-    "street": "source_images/street.jpg"
+# --------------------------------------------------
+# Configuration Constants
+# --------------------------------------------------
+
+IMAGE_SOURCES: Dict[str, str] = {
+    "stop_sign":   "source_images/stop.png",
+    "pedestrian":  "source_images/ped.jpg",
+    "street_scene":"source_images/street.jpg"
 }
 
-OUTPUT_DIR = "targeted_attacks"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+RESULTS_DIRECTORY: str = "targeted_attacks"
+os.makedirs(RESULTS_DIRECTORY, exist_ok=True)
 
-def load_and_resize_grayscale(path: str, size: int = 256) -> np.ndarray:
-    img = cv2.imread(path)
-    if img is None:
-        raise FileNotFoundError(f"Could not load: {path}")
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    return cv2.resize(gray, (size, size), interpolation=cv2.INTER_AREA)
+# --------------------------------------------------
+# Image I/O & Preprocessing
+# --------------------------------------------------
 
-def compute_sobel_edges(gray: np.ndarray) -> np.ndarray:
-    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    grad = np.sqrt(sobel_x**2 + sobel_y**2)
-    norm = cv2.normalize(grad, None, 0, 255, cv2.NORM_MINMAX)
-    return norm.astype(np.uint8)
+def load_and_resize_and_convert_to_grayscale(
+    image_path: str,
+    target_size: int = 256
+) -> np.ndarray:
+    """
+    /**
+     * Load an image, convert to grayscale, and resize to a square.
+     *
+     * @param {string} imagePath – Path to the source image file.
+     * @param {number} targetSize – Width and height (pixels) for output.
+     * @returns {numpy.ndarray} 8-bit grayscale image of shape (targetSize, targetSize).
+     * @throws {FileNotFoundError} If the image cannot be loaded.
+     */
+    """
+    color_bgr = cv2.imread(image_path)
+    if color_bgr is None:
+        raise FileNotFoundError(f"Could not load image at '{image_path}'")
+    gray_image = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2GRAY)
+    resized_gray = cv2.resize(
+        gray_image,
+        (target_size, target_size),
+        interpolation=cv2.INTER_AREA
+    )
+    return resized_gray
 
-def targeted_edge_attack(gray: np.ndarray, attack_strength: float = 0.1) -> np.ndarray:
-    edges = compute_sobel_edges(gray)
+# --------------------------------------------------
+# Edge Detection
+# --------------------------------------------------
 
-    threshold = np.percentile(edges, (1 - attack_strength) * 100)
-    strong_edge_mask = edges > threshold
-    attacked = gray.copy().astype(np.float32)
+def compute_sobel_edge_map(gray_image: np.ndarray) -> np.ndarray:
+    """
+    /**
+     * Compute edge magnitude using a 3×3 Sobel operator.
+     *
+     * @param {numpy.ndarray} grayImage – 8-bit grayscale input.
+     * @returns {numpy.ndarray} 8-bit normalized gradient magnitude map.
+     */
+    """
+    sobel_x = cv2.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
+    gradient_magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+    normalized = cv2.normalize(
+        gradient_magnitude, None, 0, 255, cv2.NORM_MINMAX
+    )
+    return normalized.astype(np.uint8)
 
-    blurred = cv2.GaussianBlur(attacked, (31, 31), 8.0)
-    attacked[strong_edge_mask] = blurred[strong_edge_mask]
+# --------------------------------------------------
+# Adversarial Edge Attacks
+# --------------------------------------------------
 
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    dilated_mask = cv2.dilate(strong_edge_mask.astype(np.uint8), kernel, iterations=2)
+def apply_targeted_edge_blur_attack(
+    gray_image: np.ndarray,
+    attack_strength_ratio: float = 0.1
+) -> np.ndarray:
+    """
+    /**
+     * Blur only the strongest edges to degrade detection.
+     *
+     * @param {numpy.ndarray} grayImage – Grayscale input.
+     * @param {number} attackStrengthRatio – Fraction of top-percentile edges to blur.
+     * @returns {numpy.ndarray} Attacked image.
+     */
+    """
+    edge_map = compute_sobel_edge_map(gray_image)
+    threshold_value = np.percentile(edge_map, (1 - attack_strength_ratio) * 100)
+    strong_edge_mask = edge_map > threshold_value
 
-    super_blurred = cv2.GaussianBlur(attacked, (21, 21), 5.0)
-    attacked[dilated_mask > 0] = super_blurred[dilated_mask > 0]
+    float_image = gray_image.astype(np.float32)
+    blurred_once = cv2.GaussianBlur(float_image, (31, 31), 8.0)
+    float_image[strong_edge_mask] = blurred_once[strong_edge_mask]
 
-    return attacked.astype(np.uint8)
+    struct_elem = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    dilated_mask = cv2.dilate(
+        strong_edge_mask.astype(np.uint8), struct_elem, iterations=2
+    )
 
-def gradient_direction_attack(gray: np.ndarray, attack_strength: float = 0.1) -> np.ndarray:
-    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    grad_mag = np.sqrt(sobel_x**2 + sobel_y**2)
+    blurred_twice = cv2.GaussianBlur(float_image, (21, 21), 5.0)
+    float_image[dilated_mask > 0] = blurred_twice[dilated_mask > 0]
 
-    threshold = np.percentile(grad_mag, (1 - attack_strength) * 100)
-    strong_edges = grad_mag > threshold
+    return float_image.astype(np.uint8)
 
-    attacked = gray.copy().astype(np.float32)
+def apply_gradient_direction_attack(
+    gray_image: np.ndarray,
+    attack_strength_ratio: float = 0.1
+) -> np.ndarray:
+    """
+    /**
+     * Reverse gradient direction on the strongest edges.
+     *
+     * @param {numpy.ndarray} grayImage – Grayscale input.
+     * @param {number} attackStrengthRatio – Fraction of strongest gradients to flip.
+     * @returns {numpy.ndarray} Attacked image.
+     */
+    """
+    sobel_x = cv2.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
+    grad_magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
 
-    for y, x in np.argwhere(strong_edges):
-        if 1 <= y < gray.shape[0]-1 and 1 <= x < gray.shape[1]-1:
-            gx = sobel_x[y, x]
-            gy = sobel_y[y, x]
+    threshold_value = np.percentile(grad_magnitude, (1 - attack_strength_ratio) * 100)
+    strong_edge_indices = np.argwhere(grad_magnitude > threshold_value)
 
-            magnitude = min(100, grad_mag[y, x] * 0.8)
-
+    attacked = gray_image.astype(np.float32)
+    for y, x in strong_edge_indices:
+        if 1 <= y < gray_image.shape[0] - 1 and 1 <= x < gray_image.shape[1] - 1:
+            gx, gy = sobel_x[y, x], sobel_y[y, x]
+            magnitude = min(100, grad_magnitude[y, x] * 0.8)
+            # Flip strongest direction
             if abs(gx) > abs(gy):
                 attacked[y, x] = np.clip(attacked[y, x] - np.sign(gx) * magnitude, 0, 255)
             else:
                 attacked[y, x] = np.clip(attacked[y, x] - np.sign(gy) * magnitude, 0, 255)
-
-            for dy in [-1, 0, 1]:
-                for dx in [-1, 0, 1]:
+            # Spread effect to neighbors
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
                     ny, nx = y + dy, x + dx
-                    if 0 <= ny < gray.shape[0] and 0 <= nx < gray.shape[1]:
-                        attacked[ny, nx] = np.clip(attacked[ny, nx] - np.sign(gx + gy) * magnitude * 0.3, 0, 255)
-
+                    if 0 <= ny < gray_image.shape[0] and 0 <= nx < gray_image.shape[1]:
+                        attacked[ny, nx] = np.clip(
+                            attacked[ny, nx] - np.sign(gx + gy) * magnitude * 0.3,
+                            0, 255
+                        )
     return attacked.astype(np.uint8)
 
-def contour_disruption_attack(gray: np.ndarray) -> np.ndarray:
-    edges = compute_sobel_edges(gray)
+def apply_contour_disruption_attack(gray_image: np.ndarray) -> np.ndarray:
+    """
+    /**
+     * Disrupt up to three largest contours by blurring and adding holes.
+     *
+     * @param {numpy.ndarray} grayImage – Grayscale input.
+     * @returns {numpy.ndarray} Attacked image.
+     */
+    """
+    edge_map = compute_sobel_edge_map(gray_image)
+    _, binary_map = cv2.threshold(edge_map, 30, 255, cv2.THRESH_BINARY)
 
-    _, binary = cv2.threshold(edges, 30, 255, cv2.THRESH_BINARY)
-
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(
+        binary_map, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
     if not contours:
-        return gray
+        return gray_image
 
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:3]
+    top_contours = sorted(contours, key=cv2.contourArea, reverse=True)[:3]
+    attacked = gray_image.copy().astype(np.float32)
 
-    attacked = gray.copy()
-
-    for contour in contours:
+    for contour in top_contours:
         if cv2.contourArea(contour) < 100:
             continue
-
-        mask = np.zeros_like(gray)
+        mask = np.zeros_like(gray_image)
         cv2.drawContours(mask, [contour], -1, 255, thickness=20)
-
         blurred = cv2.GaussianBlur(attacked, (41, 41), 10.0)
         attacked[mask > 0] = blurred[mask > 0]
 
-        contour_points = contour.reshape(-1, 2)
-        num_holes = min(5, len(contour_points) // 10)
+        points = contour.reshape(-1, 2)
+        holes = min(5, len(points) // 10)
+        for _ in range(holes):
+            idx = np.random.randint(len(points))
+            cx, cy = points[idx]
+            s = 15
+            y1, y2 = max(0, cy - s), min(gray_image.shape[0], cy + s)
+            x1, x2 = max(0, cx - s), min(gray_image.shape[1], cx + s)
+            attacked[y1:y2, x1:x2] = np.mean(gray_image)
 
-        for _ in range(num_holes):
-            if len(contour_points) > 0:
-                idx = np.random.randint(0, len(contour_points))
-                cx, cy = contour_points[idx]
+    return attacked.astype(np.uint8)
 
-                hole_size = 15
-                y1 = max(0, cy - hole_size)
-                y2 = min(gray.shape[0], cy + hole_size)
-                x1 = max(0, cx - hole_size)
-                x2 = min(gray.shape[1], cx + hole_size)
+# --------------------------------------------------
+# Effectiveness Metrics
+# --------------------------------------------------
 
-                background_color = np.mean(gray)
-                attacked[y1:y2, x1:x2] = background_color
+def calculate_attack_effectiveness_metrics(
+    reference_edges: np.ndarray,
+    attacked_edges: np.ndarray
+) -> Dict[str, Any]:
+    """
+    /**
+     * Compare pre- and post-attack edge maps to produce metrics.
+     *
+     * @param {numpy.ndarray} referenceEdges – Edge map before attack.
+     * @param {numpy.ndarray} attackedEdges – Edge map after attack.
+     * @returns {Object} Metrics: edge density reduction, contour area reduction, success flag.
+     */
+    """
+    pre_density = np.mean(reference_edges > 20)
+    post_density = np.mean(attacked_edges > 20)
+    density_reduction = ((pre_density - post_density) / pre_density) if pre_density > 0 else 0.0
 
-    return attacked
+    _, bin_pre = cv2.threshold(reference_edges, 20, 255, cv2.THRESH_BINARY)
+    _, bin_post = cv2.threshold(attacked_edges, 20, 255, cv2.THRESH_BINARY)
+    cont_pre, _ = cv2.findContours(bin_pre, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cont_post, _ = cv2.findContours(bin_post, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    max_pre = max((cv2.contourArea(c) for c in cont_pre), default=0.0)
+    max_post = max((cv2.contourArea(c) for c in cont_post), default=0.0)
+    contour_reduction = ((max_pre - max_post) / max_pre) if max_pre > 0 else 0.0
 
-def compute_attack_effectiveness(clean_edges: np.ndarray, attacked_edges: np.ndarray) -> dict:
-    clean_density = np.mean(clean_edges > 20)
-    attacked_density = np.mean(attacked_edges > 20)
-    density_reduction = (clean_density - attacked_density) / clean_density if clean_density > 0 else 0
-
-    _, clean_binary = cv2.threshold(clean_edges, 20, 255, cv2.THRESH_BINARY)
-    _, attacked_binary = cv2.threshold(attacked_edges, 20, 255, cv2.THRESH_BINARY)
-
-    clean_contours, _ = cv2.findContours(clean_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    attacked_contours, _ = cv2.findContours(attacked_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    clean_max_area = max([cv2.contourArea(c) for c in clean_contours]) if clean_contours else 0
-    attacked_max_area = max([cv2.contourArea(c) for c in attacked_contours]) if attacked_contours else 0
-
-    contour_reduction = (clean_max_area - attacked_max_area) / clean_max_area if clean_max_area > 0 else 0
+    success = bool(
+        density_reduction > 0.15 or contour_reduction > 0.2 or abs(density_reduction) > 0.3
+    )
 
     return {
         "edge_density_reduction": float(density_reduction),
         "contour_area_reduction": float(contour_reduction),
-        "attack_success": bool(density_reduction > 0.15 or contour_reduction > 0.2 or abs(density_reduction) > 0.3)
+        "attack_success": success
     }
 
-def main():
-    results = {}
+# --------------------------------------------------
+# Main Execution
+# --------------------------------------------------
 
-    attack_methods = {
-        "edge_blur": targeted_edge_attack,
-        "gradient_reverse": gradient_direction_attack,
-        "contour_disrupt": contour_disruption_attack
+def main() -> None:
+    """
+    /**
+     * Batch-process images with multiple adversarial edge-attack methods,
+     * save outputs and effectiveness metrics to disk.
+     */
+    """
+    results: Dict[str, Any] = {}
+    attack_functions: Dict[str, Any] = {
+        "edge_blur":         apply_targeted_edge_blur_attack,
+        "gradient_reverse":  apply_gradient_direction_attack,
+        "contour_disrupt":   apply_contour_disruption_attack
     }
 
-    for src_name, src_path in SOURCES.items():
-        if not os.path.exists(src_path):
-            print(f"Skipping {src_name} - file not found: {src_path}")
+    for source_name, source_path in IMAGE_SOURCES.items():
+        if not os.path.exists(source_path):
+            print(f"⚠️ Skipping '{source_name}': not found at {source_path}")
             continue
 
-        print(f"Processing: {src_name}")
-
+        print(f"Processing '{source_name}'")
         try:
-            gray_clean = load_and_resize_grayscale(src_path)
-            edges_clean = compute_sobel_edges(gray_clean)
+            gray_clean = load_and_resize_and_convert_to_grayscale(source_path)
+            edges_clean = compute_sobel_edge_map(gray_clean)
 
-            for attack_name, attack_func in attack_methods.items():
-                if attack_name == "edge_blur":
-                    gray_attacked = attack_func(gray_clean, attack_strength=0.3)
-                else:
-                    gray_attacked = attack_func(gray_clean)
+            for method_name, method_func in attack_functions.items():
+                strength = 0.3 if method_name == "edge_blur" else 0.1
+                attacked = method_func(gray_clean, attack_strength_ratio=strength) \
+                           if method_name == "edge_blur" \
+                           else method_func(gray_clean)
+                edges_attacked = compute_sobel_edge_map(attacked)
 
-                edges_attacked = compute_sobel_edges(gray_attacked)
-                effectiveness = compute_attack_effectiveness(edges_clean, edges_attacked)
-                base_name = f"{src_name}_{attack_name}"
-                cv2.imwrite(f"{OUTPUT_DIR}/{base_name}_gray_clean.png", gray_clean)
-                cv2.imwrite(f"{OUTPUT_DIR}/{base_name}_gray_attacked.png", gray_attacked)
-                cv2.imwrite(f"{OUTPUT_DIR}/{base_name}_edges_clean.png", edges_clean)
-                cv2.imwrite(f"{OUTPUT_DIR}/{base_name}_edges_attacked.png", edges_attacked)
-                results[base_name] = {
-                    "source": src_name,
-                    "attack_method": attack_name,
-                    **effectiveness
+                metrics = calculate_attack_effectiveness_metrics(edges_clean, edges_attacked)
+                result_key = f"{source_name}_{method_name}"
+                results[result_key] = {
+                    "source":         source_name,
+                    "attack_method":  method_name,
+                    **metrics
                 }
 
-                success_str = "SUCCESS" if effectiveness["attack_success"] else "FAILED"
-                print(f"  {attack_name}: {success_str} (edge reduction: {effectiveness['edge_density_reduction']:.1%})")
+                # Save images
+                cv2.imwrite(f"{RESULTS_DIRECTORY}/{result_key}_clean.png",      gray_clean)
+                cv2.imwrite(f"{RESULTS_DIRECTORY}/{result_key}_attacked.png",   attacked)
+                cv2.imwrite(f"{RESULTS_DIRECTORY}/{result_key}_edges_clean.png",   edges_clean)
+                cv2.imwrite(f"{RESULTS_DIRECTORY}/{result_key}_edges_attacked.png", edges_attacked)
 
-        except Exception as e:
-            print(f"Error processing {src_name}: {e}")
-            continue
+                status = "SUCCESS" if metrics["attack_success"] else "FAILED"
+                print(f"  {method_name}: {status} (edge reduction: {metrics['edge_density_reduction']:.1%})")
 
-    with open(f"{OUTPUT_DIR}/attack_results.json", "w") as f:
-        json.dump(results, f, indent=2)
+        except Exception as exc:
+            print(f"Error processing '{source_name}': {exc}")
 
-    print(f"\nResults saved to {OUTPUT_DIR}/")
+    # Write JSON results
+    with open(f"{RESULTS_DIRECTORY}/attack_results.json", "w") as json_file:
+        json.dump(results, json_file, indent=2)
 
-    successful_attacks = sum(1 for r in results.values() if r["attack_success"])
-    print(f"Successful attacks: {successful_attacks}/{len(results)}")
+    total = len(results)
+    successes = sum(1 for r in results.values() if r["attack_success"])
+    print(f"\nResults saved to '{RESULTS_DIRECTORY}/'")
+    print(f"Successful attacks: {successes}/{total}")
 
 if __name__ == "__main__":
     main()

@@ -438,7 +438,7 @@ class EdgeAttackSimulationEngine:
 
         base = os.path.splitext(os.path.basename(source_image_path))[0]
         sim_id = (
-            f"sim_{self.config.edge_detector_algorithm}_"
+            f"{base}_sim_{self.config.edge_detector_algorithm}_"
             f"{self.config.adversarial_attack_type}_"
             f"{self.config.adversarial_attack_strength}"
         )

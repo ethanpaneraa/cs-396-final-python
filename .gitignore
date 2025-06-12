@@ -5,6 +5,7 @@ targeted_attacks/
 high_impact_dataset/
 website_dataset/
 .DS_Store
+canny_targeted_attacks/
 comprehensive_results/
 progressive_attacks/
 effective_simulation_results/
